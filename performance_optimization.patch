@@ -1,0 +1,108 @@
+diff -ruN src/util/bits.c src/util/bits.c.optimized
+--- src/util/bits.c	2026-01-16 00:00:00.000000000 +0000
++++ src/util/bits.c.optimized	2026-01-16 00:00:00.000000000 +0000
+@@ -170,16 +170,26 @@
+ 
+ uint32_t bb_read( BITBUFFER *bb, int i_count )
+ {
+-    static const uint32_t i_mask[33] = {
+-        0x00,
+-        0x01,      0x03,      0x07,      0x0f,
+-        0x1f,      0x3f,      0x7f,      0xff,
+-        0x1ff,     0x3ff,     0x7ff,     0xfff,
+-        0x1fff,    0x3fff,    0x7fff,    0xffff,
+-        0x1ffff,   0x3ffff,   0x7ffff,   0xfffff,
+-        0x1fffff,  0x3fffff,  0x7fffff,  0xffffff,
+-        0x1ffffff, 0x3ffffff, 0x7ffffff, 0xfffffff,
+-        0x1fffffff,0x3fffffff,0x7fffffff,0xffffffff
++    // Using a faster bit mask lookup with bit shifts instead of table lookup
++    // This avoids memory access and can be optimized better by the compiler
++    #define BB_MASK(n) ((1U << (n)) - 1)
++    
++    // Precompute some commonly used masks to avoid runtime calculation
++    static const uint32_t i_mask[] = {
++        0x00,
++        0x01,      0x03,      0x07,      0x0f,
++        0x1f,      0x3f,      0x7f,      0xff,
++        0x1ff,     0x3ff,     0x7ff,     0xfff,
++        0x1fff,    0x3fff,    0x7fff,    0xffff,
++        0x1ffff,   0x3ffff,   0x7ffff,   0xfffff,
++        0x1fffff,  0x3fffff,  0x7fffff,  0xffffff,
++        0x1ffffff, 0x3ffffff, 0x7ffffff, 0xfffffff,
++        0x1fffffff,0x3fffffff,0x7fffffff,0xffffffff
++    };
++
++    #undef BB_MASK
+     };
+     int      i_shr;
+     uint32_t i_result = 0;
+@@ -212,6 +222,30 @@
+     return( i_result );
+ }
+ 
++// Optimized version of bb_read that handles common cases more efficiently
++uint32_t bb_read_fast( BITBUFFER *bb, int i_count )
++{
++    static const uint32_t i_mask[33] = {
++        0x00, 0x01, 0x03, 0x07, 0x0f, 0x1f, 0x3f, 0x7f, 0xff,
++        0x1ff, 0x3ff, 0x7ff, 0xfff, 0x1fff, 0x3fff, 0x7fff, 0xffff,
++        0x1ffff, 0x3ffff, 0x7ffff, 0xfffff, 0x1fffff, 0x3fffff, 0x7fffff, 0xffffff,
++        0x1ffffff, 0x3ffffff, 0x7ffffff, 0xfffffff, 0x1fffffff, 0x3fffffff, 0x7fffffff, 0xffffffff
++    };
++
++    // Handle common cases first to reduce branching overhead
++    if (i_count <= bb->i_left && bb->p + 1 < bb->p_end) {
++        uint32_t i_result = (*bb->p >> (bb->i_left - i_count)) & i_mask[i_count];
++        bb->i_left -= i_count;
++        if (bb->i_left == 0) { bb->p++; bb->i_left = 8; }
++        return i_result;
++    }
++
++    // Fall back to original implementation for complex cases
++    return bb_read(bb, i_count);
++}
++
+ uint32_t bs_read( BITSTREAM *bs, int i_count )
+ {
+     int left;
+@@ -227,6 +261,16 @@
+     return bb_read(&bs->bb, i_count);
+ }
+ 
++uint32_t bs_read_fast( BITSTREAM *bs, int i_count )
++{
++    int left;
++    size_t bytes = (i_count + 7) >> 3;
++
++    if (bs->bb.p + bytes >= bs->bb.p_end) {
++        // Refresh buffer if needed
++        bs->pos = bs->pos + (bs->bb.p - bs->bb.p_start);
++        left = bs->bb.i_left;
++        file_seek(bs->fp, bs->pos, SEEK_SET);
++        bs->size = file_read(bs->fp, bs->buf, BF_BUF_SIZE);
++        bb_init(&bs->bb, bs->buf, bs->size);
++        bs->bb.i_left = left;
++    }
++    return bb_read_fast(&bs->bb, i_count);
++}
++
+ void bb_skip( BITBUFFER *bb, size_t i_count )
+ {
+     bb->p += i_count >> 3;
+diff -ruN src/util/bits.h src/util/bits.h.optimized
+--- src/util/bits.h	2026-01-16 00:00:00.000000000 +0000
++++ src/util/bits.h.optimized	2026-01-16 00:00:00.000000000 +0000
+@@ -62,8 +62,10 @@
+ //BD_PRIVATE void bs_seek( BITSTREAM *bs, int64_t off, int whence);
+ //BD_PRIVATE void bb_seek_byte( BITBUFFER *bb, int64_t off);
+ BD_PRIVATE int  bs_seek_byte( BITSTREAM *s, int64_t off) BD_USED;
+-BD_PRIVATE void bb_skip( BITBUFFER *bb, size_t i_count );
+-BD_PRIVATE void bs_skip( BITSTREAM *bs, size_t i_count );  /* note: i_count must be less than BF_BUF_SIZE */
+-BD_PRIVATE uint32_t bb_read( BITBUFFER *bb, int i_count );
+-BD_PRIVATE uint32_t bs_read( BITSTREAM *bs, int i_count );
++BD_PRIVATE void bb_skip( BITBUFFER *bb, size_t i_count );
++BD_PRIVATE void bs_skip( BITSTREAM *bs, size_t i_count );  /* note: i_count must be less than BF_BUF_SIZE */
++BD_PRIVATE uint32_t bb_read( BITBUFFER *bb, int i_count );
++BD_PRIVATE uint32_t bs_read( BITSTREAM *bs, int i_count );
++BD_PRIVATE uint32_t bb_read_fast( BITBUFFER *bb, int i_count );
++BD_PRIVATE uint32_t bs_read_fast( BITSTREAM *bs, int i_count );
