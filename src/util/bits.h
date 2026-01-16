@@ -35,7 +35,7 @@
  * This file defines functions, structures for handling streams of bits
  */
 
-#define BF_BUF_SIZE   (1024*32)
+#define BF_BUF_SIZE   (1024*64)  /* Increased buffer size for better I/O performance */
 
 typedef struct {
     const uint8_t *p_start;

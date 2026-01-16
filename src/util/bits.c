@@ -38,6 +38,11 @@
 
 void bb_init( BITBUFFER *bb, const uint8_t *p_data, size_t i_data )
 {
+    // Add prefetch hint for better cache performance
+    if (i_data > 0 && p_data != NULL) {
+        __builtin_prefetch(p_data, 0, 3);  // Prefetch for temporal locality
+    }
+
     bb->p_start = p_data;
     bb->p       = bb->p_start;
     bb->p_end   = bb->p_start + i_data;
@@ -170,6 +175,7 @@ int bs_seek_byte( BITSTREAM *s, int64_t off)
 
 uint32_t bb_read( BITBUFFER *bb, int i_count )
 {
+    // Optimize the mask array access by making it static const
     static const uint32_t i_mask[33] = {
         0x00,
         0x01,      0x03,      0x07,      0x0f,
@@ -181,16 +187,15 @@ uint32_t bb_read( BITBUFFER *bb, int i_count )
         0x1ffffff, 0x3ffffff, 0x7ffffff, 0xfffffff,
         0x1fffffff,0x3fffffff,0x7fffffff,0xffffffff
     };
-    int      i_shr;
     uint32_t i_result = 0;
 
     while( i_count > 0 ) {
 
-        if( bb->p >= bb->p_end ) {
+        if( __builtin_expect(bb->p >= bb->p_end, 0) ) {
             break;
         }
 
-        i_shr = bb->i_left - i_count;
+        const int i_shr = bb->i_left - i_count;
         if( i_shr >= 0 ) {
             /* more in the buffer than requested */
             i_result |= ( *bb->p >> i_shr )&i_mask[i_count];
@@ -217,7 +222,9 @@ uint32_t bs_read( BITSTREAM *bs, int i_count )
     int left;
     int bytes = (i_count + 7) >> 3;
 
-    if (bs->bb.p + bytes >= bs->bb.p_end) {
+    // Check if we're close to buffer end and need to refresh
+    // Use branch prediction hints to optimize common case
+    if (__builtin_expect(bs->bb.p + bytes >= bs->bb.p_end, 0)) {
         bs->pos = bs->pos + (bs->bb.p - bs->bb.p_start);
         left = bs->bb.i_left;
         file_seek(bs->fp, bs->pos, SEEK_SET);
@@ -243,6 +250,12 @@ void bs_skip( BITSTREAM *bs, size_t i_count )
 {
     int left;
     size_t bytes = (i_count + 7) >> 3;
+
+    // Optimize common case: skip within current buffer
+    if (__builtin_expect(bs->bb.p + bytes < bs->bb.p_end, 1)) {
+        bb_skip(&bs->bb, i_count);
+        return;
+    }
 
     if (bs->bb.p + bytes >= bs->bb.p_end) {
         bs->pos = bs->pos + (bs->bb.p - bs->bb.p_start);
